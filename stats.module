@@ -1,0 +1,192 @@
+<?php
+/**
+ * Implements hook_menu().
+ */
+function stats_menu() {
+
+  $items['stats'] = array(
+    'title' => 'Stats',
+    'page callback' => 'stats_statistics',
+    'access arguments' => array('access content'),
+    'access callback' => 'user_access',
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  $items['admin/config/content/stats'] = array(
+    'title' => 'Administer Statistics',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('stats_admin'),
+    'access arguments' => array('recalculate stats'),
+    'access callback' => 'user_access',
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  return $items;
+}
+
+function stats_admin($form_state) {
+  $form['info'] = array(
+    '#markup' => '<p>Click the button below to recalculate the statistics. You will need to recalculate the statistics each time you add new At-Bats to the system<p>',
+  );
+
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => 'Recalculate Statistics',
+  );
+
+  $form['return'] = array(
+    '#markup' => l('Return to Stats', 'stats'),
+  );
+
+  return $form;
+}
+
+function stats_admin_submit($form, &$form_state) {
+  cache_clear_all('stats', 'cache', TRUE);
+  stats_get_all_stats();
+}
+
+/**
+ * Callback function for the stats page.
+ */
+function stats_statistics() {
+  return theme('stats');
+}
+
+/**
+ * Implements hook_theme().
+ */
+function stats_theme() {
+  return array(
+    'stats' => array(
+      'variables' => array(
+        'table_header' => array('Batter', 'AB', 'H', '2B', '3B', 'HR', 'RBI', 'BB', 'K', 'AVG', 'OBP', 'SLG', 'OPS'),
+      ),
+      'template' => 'stats',
+    ),
+  );
+}
+
+function stats_get_all_stats() {
+  $batters = stats_get_batter_list();
+  foreach($batters as $batter) {
+    $batter_stat = stats_batter_get_stats($batter->tid);
+    $avg = (array_key_exists('AVG', $batter_stat)) ? $batter_stat['AVG'] : 0;
+    $batter_stats[$avg] = $batter_stat;
+  }
+  krsort($batter_stats);
+  return $batter_stats;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function stats_permission() {
+  return array(
+    'recalculate stats' => array(
+      'title' => t('Recalculate batter statistics'),
+    ),
+  );
+}
+
+function stats_init() {
+  $stats = stats_get_all_stats();
+}
+
+function stats_get_batter_list() {
+  $vocabulary = taxonomy_vocabulary_machine_name_load('batter');
+  $batter_list = taxonomy_get_tree($vocabulary->vid);
+  return $batter_list;
+}
+
+function stats_get_batter_abs($batter_id = 1) {
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', 'node')
+    ->entityCondition('bundle', 'at_bat')
+    ->fieldCondition('field_batter', 'tid', $batter_id);
+  $result = $query->execute();
+
+  $result = array_filter($result);
+
+  $at_bats = array(
+    'results' => array(),
+    'rbis' => array(),
+  );
+  if (!empty($result)) {
+    $ab_ids = array_keys($result['node']);
+    $ab_nodes = node_load_multiple($ab_ids);
+
+    foreach ($ab_nodes as $ab) {
+      $result_field = field_get_items('node', $ab, 'field_ab_result');
+      $result_code = $result_field[0]['value'];
+      $results[] = $result_code;
+
+      $rbi_field = field_get_items('node', $ab, 'field_ab_rbi');
+      $rbi_value = $rbi_field[0]['value'];
+      $rbis[] = $rbi_value;
+    }
+    $at_bats = array(
+      'results' => $results,
+      'rbis' => $rbis,
+    );
+  }
+  return ($at_bats);
+}
+
+function stats_batter_get_stats($batter_id = 1) {
+  $my_data = &drupal_static(__FUNCTION__);
+  if (!isset($my_data)) {
+    if ($cache = cache_get('stats_batter_' . $batter_id)) {
+      $stats = $cache->data;
+    }
+    else {
+      $at_bats = stats_get_batter_abs($batter_id);
+      $at_bats = array_filter($at_bats);
+      $stats = array();
+      if (!empty($at_bats)) {
+        $value_count = array_count_values($at_bats['results']);
+
+        $walks = (array_key_exists('BB', $value_count)) ? $value_count['BB'] : 0;
+        $singles = (array_key_exists('1B', $value_count)) ? $value_count['1B'] : 0;
+        $doubles = (array_key_exists('2B', $value_count)) ? $value_count['2B'] : 0;
+        $triples = (array_key_exists('3B', $value_count)) ? $value_count['3B'] : 0;
+        $home_runs = (array_key_exists('HR', $value_count)) ? $value_count['HR'] : 0;
+        $strike_outs_swinging = (array_key_exists('K', $value_count)) ? $value_count['K'] : 0;
+        $strike_outs_looking = (array_key_exists('Kc', $value_count)) ? $value_count['Kc'] : 0;
+        $sac_flys = (array_key_exists('SF', $value_count)) ? $value_count['SF'] : 0;
+
+        $count = count($at_bats['results']);
+        $non_abs = ($walks + $sac_flys);
+        $total_abs = $count - $non_abs;
+        $total_hits = ($singles + $doubles + $triples + $home_runs);
+        $total_bases = ($singles + ($doubles * 2) + ($triples * 3) + ($home_runs * 4));
+
+        $rbis = array_sum($at_bats['rbis']);
+
+        $batter = taxonomy_term_load($batter_id);
+
+        $stats = array(
+          'Batter' => '<strong>' . $batter->name . '</strong>',
+          'AB' => $total_abs,
+          'H' => $total_hits,
+          '2B' => $doubles,
+          '3B' => $triples,
+          'HR' => $home_runs,
+          'RBI' => $rbis,
+          'BB' => $walks,
+          'SO' => $strike_outs_swinging + $strike_outs_looking,
+          'AVG' => number_format($total_hits / $total_abs, 3),
+          'OBP' => number_format(($total_hits + $walks) / ($total_abs + $walks + $sac_flys), 3),
+          'SLG' => number_format(($total_bases / $total_abs), 3),
+          'OPS' => number_format((($total_hits + $walks) / ($total_abs + $walks + $sac_flys)) + ($total_bases / $total_abs), 3),
+        );
+      }
+
+      cache_set('stats_batter_' . $batter_id, $stats);
+      drupal_set_message('Recalculated Statistics for Batter ' . $batter_id . '.');
+    }
+  }
+
+  return $stats;
+}
+

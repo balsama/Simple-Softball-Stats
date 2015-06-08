@@ -1,0 +1,6 @@
+name = "Statistics"
+description = "Softball Stats!."
+package = Other
+core = 7.x
+version = "7.x-1.0"
+
